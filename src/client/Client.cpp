@@ -20,11 +20,11 @@ Client::Client(const std::string& host, int port)
       sent_count_(0), received_count_(0), prompt_needed_(true), chat_started(false)
 {
     start_time_ = std::chrono::steady_clock::now();
-    signal(SIGPIPE, SIG_IGN);
+    signal(SIGPIPE, SIG_IGN);       // Игнорировать SIGPIPE при записи в закрытый сокет
 }
 
 Client::~Client() {
-    shutdown();
+    shutdown();                     // Корректно закрыть соединение при уничтожении объекта
 }
 
 bool Client::connect_to_server() {
@@ -58,6 +58,7 @@ bool Client::connect_to_server() {
 }
 
 bool Client::is_system_message(const std::string& message) {
+    // Проверка на системные сообщения от сервера
     if (message.find(MSG_OTHER_DISCONNECTED) != std::string::npos) {
         std::cout << "\n[System] " << MSG_OTHER_DISCONNECTED << std::endl;
         connected_ = false;
@@ -96,12 +97,12 @@ void Client::handle_server_message() {
     std::string message(buffer, n);
 
     if (is_system_message(message)) {
-        if (connected_) // если не отключились, нужно показать приглашение
+        if (connected_)
             prompt_needed_ = true;
         return;
     }
 
-    // Обычное сообщение от собеседника
+    // Убираем разделитель и выводим сообщение собеседника
     if (!message.empty() && message.back() == DELIMITER)
         message.pop_back();
     std::cout << "\n[Friend] " << message << std::endl;
@@ -121,7 +122,7 @@ void Client::process_command(const std::string& line) {
         return;
     }
 
-    // Отправка сообщения
+    // Отправка сообщения с разделителем
     std::string to_send = line + DELIMITER;
     ssize_t sent = send(sock_fd_, to_send.c_str(), to_send.size(), 0);
     if (sent < 0) {
@@ -150,10 +151,8 @@ void Client::handle_user_input() {
                 if (!line.empty() && line.back() == '\r')
                     line.pop_back();
                 process_command(line);
-                // После обработки команды выходим, чтобы обновить приглашение в цикле
                 break;
             }
-            // Пустая строка – просто выходим
             break;
         } else {
             input_buffer_.push_back(ch);
@@ -166,6 +165,7 @@ void Client::print_stats() const {
     auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - start_time_);
     std::cout << "\n===== STATISTICS =====" << std::endl;
     std::cout << "Connected for: " << duration.count() << " seconds" << std::endl;
+    // .load() нужен, если sent_count_/received_count_ объявлены как atomic
     std::cout << "Messages sent: " << sent_count_.load() << std::endl;
     std::cout << "Messages received: " << received_count_.load() << std::endl;
     std::cout << "======================" << std::endl;
@@ -184,7 +184,7 @@ void Client::run() {
     if (!connect_to_server())
         return;
 
-    // Устанавливаем неблокирующий режим для stdin
+    // Перевод stdin в неблокирующий режим для работы с select
     int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
     if (flags == -1) {
         perror("fcntl get");
@@ -197,6 +197,7 @@ void Client::run() {
 
     fd_set readfds;
     while (connected_) {
+        // Показываем приглашение, если нужно и чат уже начался
         if (prompt_needed_ && chat_started) {
             std::cout << "You: " << std::flush;
             prompt_needed_ = false;
@@ -207,11 +208,11 @@ void Client::run() {
         FD_SET(STDIN_FILENO, &readfds);
         int max_fd = std::max(sock_fd_, STDIN_FILENO);
 
-        struct timeval tv = {0, 100000}; // 100 мс
+        struct timeval tv = {0, 100000}; // Таймаут 100 мс
         int activity = select(max_fd + 1, &readfds, nullptr, nullptr, &tv);
 
         if (activity < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR) continue; // Перезапуск после прерывания сигналом
             perror("select");
             break;
         }
@@ -223,7 +224,7 @@ void Client::run() {
             handle_user_input();
     }
 
-    // Восстанавливаем блокирующий режим для stdin
+    // Возвращаем stdin в блокирующий режим
     fcntl(STDIN_FILENO, F_SETFL, flags);
     shutdown();
     std::cout << "Client stopped." << std::endl;
